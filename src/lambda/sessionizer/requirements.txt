@@ -1,5 +1,0 @@
-# Lambda runtime dependencies
-# boto3 is provided by the Lambda runtime — DO NOT include it here (adds ~30MB)
-# pyarrow is needed for Parquet writing to S3 (install via Lambda Layer or bundle)
-
-pyarrow>=14.0.0
