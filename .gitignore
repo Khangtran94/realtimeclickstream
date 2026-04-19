@@ -1,0 +1,14 @@
+# Terraform
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.backup
+
+# Python (since you have pyproject)
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# OS / misc
+.DS_Store
+Thumbs.db
