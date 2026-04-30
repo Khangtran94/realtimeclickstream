@@ -218,8 +218,8 @@ def ingest_file(kinesis_client, path: Path, max_rows: int = None) -> tuple[int, 
         read_kwargs["nrows"] = max_rows
 
     for chunk in pd.read_csv(path, **read_kwargs):
-        for _, raw_row in chunk.iterrows():
-            row_dict = raw_row.to_dict()
+        for raw_row in chunk.itertuples(index=False):
+            row_dict = raw_row._asdict()
 
             # Step 2 — CLEAN
             cleaned = clean_row(row_dict)
