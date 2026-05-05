@@ -139,6 +139,7 @@ resource "aws_lambda_event_source_mapping" "kinesis_to_sessionizer" {
   function_name     = aws_lambda_function.sessionizer.arn
   starting_position = "LATEST"       # only process new records, not backfill
   batch_size        = 100            # records per Lambda invocation
+  tumbling_window_in_seconds = 30
 }
 
 # ---------------------------------------------------------------------------

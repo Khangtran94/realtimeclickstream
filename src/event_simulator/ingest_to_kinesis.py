@@ -34,9 +34,9 @@ load_dotenv()  # reads .env file if present
 STREAM_NAME = os.environ["KINESIS_STREAM_NAME"]          # required — will raise if missing
 AWS_REGION  = os.environ.get("AWS_REGION", "ap-southeast-1")  # optional — defaults to us-east-1
 
-CHUNK_SIZE = 1000    # rows read from CSV at a time (memory-safe)
+CHUNK_SIZE = 100000    # rows read from CSV at a time (memory-safe)
 BATCH_SIZE = 500     # max records per Kinesis put_records() call
-LOG_EVERY = 10_000   # print progress every N records
+# LOG_EVERY = 100000   # print progress every N records
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -240,8 +240,8 @@ def ingest_file(kinesis_client, path: Path, max_rows: int = None) -> tuple[int, 
                 batch = []
 
             # Step 6 — LOG progress
-            if (total_sent + total_dropped) % LOG_EVERY == 0 and (total_sent + total_dropped) > 0:
-                log_progress(total_sent, total_dropped, start_time)
+            # if (total_sent + total_dropped) % LOG_EVERY == 0 and (total_sent + total_dropped) > 0:
+            #     log_progress(total_sent, total_dropped, start_time)
 
             progress.update(1)
             progress.set_postfix(sent=total_sent, dropped=total_dropped)
@@ -312,10 +312,10 @@ if __name__ == "__main__":
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
         "--file",
-        help="Single CSV file, e.g. data/raw/2019-Oct.csv",)
+        help="Single CSV file, e.g. data/2019-Oct.csv",)
     group.add_argument(
         "--folder",
-        help="Folder containing CSV files, e.g. data/raw/",)
+        help="Folder containing CSV files, e.g. data",)
 
     parser.add_argument(
         "--max-rows",
