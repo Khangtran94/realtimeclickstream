@@ -2,14 +2,28 @@ provider "aws" {
   region = "ap-southeast-1"
 }
 
+data "aws_caller_identity" "current" {}
+
+locals {
+  account_id = data.aws_caller_identity.current.account_id
+  # Make S3 bucket names globally unique
+  raw_bucket_name       = "realtimeclickstream-raw-${local.account_id}"
+  processed_bucket_name = "realtimeclickstream-processed-${local.account_id}"
+}
+
 # ---------------------------------------------------------------------------
-# Kinesis Stream (already deployed)
+# Kinesis Stream
 # ---------------------------------------------------------------------------
 
 resource "aws_kinesis_stream" "ecommerce_stream" {
   name             = "ecommerce-stream"
   shard_count      = 1
   retention_period = 24
+
+  tags = {
+    Project = "realtimeclickstream"
+    Layer   = "ingest"
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -121,6 +135,7 @@ resource "aws_lambda_function" "sessionizer" {
   environment {
     variables = {
       DYNAMODB_TABLE = aws_dynamodb_table.sessions.name
+      AWS_REGION     = "ap-southeast-1"
     }
   }
 
@@ -135,20 +150,20 @@ resource "aws_lambda_function" "sessionizer" {
 # ---------------------------------------------------------------------------
 
 resource "aws_lambda_event_source_mapping" "kinesis_to_sessionizer" {
-  event_source_arn  = aws_kinesis_stream.ecommerce_stream.arn
-  function_name     = aws_lambda_function.sessionizer.arn
-  starting_position = "LATEST"       # only process new records, not backfill
-  batch_size        = 100            # records per Lambda invocation
-  tumbling_window_in_seconds = 30
+  event_source_arn                   = aws_kinesis_stream.ecommerce_stream.arn
+  function_name                      = aws_lambda_function.sessionizer.arn
+  starting_position                  = "LATEST"       # only process new records, not backfill
+  batch_size                         = 100            # records per Lambda invocation
+  tumbling_window_in_seconds         = 30
+  maximum_batching_window_in_seconds = 0              # we use tumbling_window instead
 }
 
 # ---------------------------------------------------------------------------
 # S3 Buckets — Batch Layer storage
 # ---------------------------------------------------------------------------
 
-# Bucket 1: Raw events — Firehose dumps raw JSON here
 resource "aws_s3_bucket" "raw_events" {
-  bucket = "realtimeclickstream-raw-events"
+  bucket = local.raw_bucket_name
 
   tags = {
     Project = "realtimeclickstream"
@@ -156,7 +171,6 @@ resource "aws_s3_bucket" "raw_events" {
   }
 }
 
-# Block all public access — this is private pipeline data
 resource "aws_s3_bucket_public_access_block" "raw_events" {
   bucket                  = aws_s3_bucket.raw_events.id
   block_public_acls       = true
@@ -165,9 +179,8 @@ resource "aws_s3_bucket_public_access_block" "raw_events" {
   restrict_public_buckets = true
 }
 
-# Bucket 2: Processed events — Spark writes corrected Parquet sessions here
 resource "aws_s3_bucket" "processed_events" {
-  bucket = "realtimeclickstream-processed-events"
+  bucket = local.processed_bucket_name
 
   tags = {
     Project = "realtimeclickstream"
@@ -184,15 +197,12 @@ resource "aws_s3_bucket_public_access_block" "processed_events" {
 }
 
 # ---------------------------------------------------------------------------
-# IAM Role — Firehose needs permission to:
-#   1. Read from Kinesis Data Stream
-#   2. Write to S3 raw-events bucket
+# IAM Role for Firehose
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "firehose_role" {
   name = "realtimeclickstream-firehose-role"
 
-  # Trust policy: allow Firehose service to assume this role
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -210,7 +220,6 @@ resource "aws_iam_role_policy" "firehose_policy" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      # Permission 1: Read from Kinesis stream
       {
         Effect = "Allow"
         Action = [
@@ -221,29 +230,32 @@ resource "aws_iam_role_policy" "firehose_policy" {
         ]
         Resource = aws_kinesis_stream.ecommerce_stream.arn
       },
-      # Permission 2: Write to S3 raw-events bucket
       {
         Effect = "Allow"
         Action = [
           "s3:PutObject",
-          "s3:PutObjectAcl"
+          "s3:PutObjectAcl",
+          "s3:AbortMultipartUpload",
+          "s3:GetBucketLocation",
+          "s3:ListBucket"
         ]
-        Resource = "${aws_s3_bucket.raw_events.arn}/*"
+        Resource = [
+          aws_s3_bucket.raw_events.arn,
+          "${aws_s3_bucket.raw_events.arn}/*"
+        ]
       }
     ]
   })
 }
 
 # ---------------------------------------------------------------------------
-# Kinesis Firehose — reads from Kinesis stream, writes raw JSON to S3
-# Partitioned by date: s3://raw-events/year=.../month=.../day=.../hour=.../
+# Kinesis Firehose — reads from Kinesis, writes raw JSON to S3
 # ---------------------------------------------------------------------------
 
 resource "aws_kinesis_firehose_delivery_stream" "to_s3" {
   name        = "realtimeclickstream-firehose"
   destination = "extended_s3"
 
-  # Source: read from Kinesis Data Stream
   kinesis_source_configuration {
     kinesis_stream_arn = aws_kinesis_stream.ecommerce_stream.arn
     role_arn           = aws_iam_role.firehose_role.arn
@@ -253,22 +265,35 @@ resource "aws_kinesis_firehose_delivery_stream" "to_s3" {
     role_arn   = aws_iam_role.firehose_role.arn
     bucket_arn = aws_s3_bucket.raw_events.arn
 
-    # Partition raw events by date so Spark can read just one day at a time
+    # Partition by time so Spark can read one day/hour at a time
     prefix              = "raw/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/"
     error_output_prefix = "errors/!{firehose:error-output-type}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/"
 
-    # Buffer: flush to S3 every 5 minutes OR when buffer hits 64MB
-    # (whichever comes first — keeps S3 files reasonably sized)
-    buffering_interval = 300
-    buffering_size     = 64
+    buffering_interval = 300   # 5 minutes
+    buffering_size     = 64    # MB
 
-    compression_format = "UNCOMPRESSED" # keep as plain JSON for now — Spark can read it easily
+    compression_format = "UNCOMPRESSED"
   }
 }
 
 # ---------------------------------------------------------------------------
-# Outputs — useful to copy when configuring Spark job later
+# Outputs — copy these values after terraform apply
 # ---------------------------------------------------------------------------
+
+output "kinesis_stream_name" {
+  value       = aws_kinesis_stream.ecommerce_stream.name
+  description = "Kinesis stream name — put this in .env as KINESIS_STREAM_NAME"
+}
+
+output "dynamodb_table_name" {
+  value       = aws_dynamodb_table.sessions.name
+  description = "DynamoDB table name — put this in .env as DYNAMODB_TABLE"
+}
+
+output "lambda_function_name" {
+  value       = aws_lambda_function.sessionizer.function_name
+  description = "Lambda function name"
+}
 
 output "raw_events_bucket" {
   value       = aws_s3_bucket.raw_events.bucket
@@ -277,7 +302,7 @@ output "raw_events_bucket" {
 
 output "processed_events_bucket" {
   value       = aws_s3_bucket.processed_events.bucket
-  description = "S3 bucket where Spark writes corrected Parquet sessions"
+  description = "S3 bucket for Spark corrected sessions"
 }
 
 output "firehose_name" {
