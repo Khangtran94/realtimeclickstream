@@ -1,0 +1,19 @@
+How to get sample data for this project
+======================================
+
+1. Go to the REES46 dataset on Kaggle:
+   https://www.kaggle.com/datasets/mkechinov/ecommerce-behavior-data-from-multi-category-store
+
+2. Download one of the monthly CSV files (e.g. 2019-Oct.csv or 2019-Nov.csv).
+   The full files are large (several GB). For learning you only need a slice.
+
+3. Place the file under this data/ folder, for example:
+   data/2019-Oct.csv
+
+4. When running the simulator you can limit the number of rows:
+
+   python src/event_simulator/ingest_to_kinesis.py \
+     --file data/2019-Oct.csv \
+     --max-rows 50000
+
+The CSV is gitignored so it will never be committed.

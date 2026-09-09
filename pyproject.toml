@@ -1,7 +1,7 @@
 [project]
 name = "realtimeclickstream"
 version = "0.1.0"
-description = "Add your description here"
+description = "Learn Lambda Architecture and AWS streaming services with a real-time clickstream pipeline"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
